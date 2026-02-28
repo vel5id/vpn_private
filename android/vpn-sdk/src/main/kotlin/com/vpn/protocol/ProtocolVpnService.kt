@@ -46,21 +46,39 @@ class ProtocolVpnService : VpnService() {
         val host = intent?.getStringExtra("server_host") ?: return START_NOT_STICKY
         val port = intent.getIntExtra("server_port", DEFAULT_PORT)
         val token = intent.getStringExtra("session_token") ?: return START_NOT_STICKY
+        val killSwitch = intent.getBooleanExtra("kill_switch", true)
 
         relayThread = Thread {
-            try {
-                runTunnel(host, port, token)
-            } catch (e: Exception) {
-                Log.e(TAG, "Tunnel failed", e)
-            } finally {
-                disconnect()
+            var attempt = 0
+            val maxAttempts = 5
+            val delays = longArrayOf(1000, 2000, 4000, 8000, 15000)
+            while (attempt < maxAttempts) {
+                try {
+                    runTunnel(host, port, token, killSwitch)
+                    break // clean exit
+                } catch (e: Exception) {
+                    attempt++
+                    Log.e(TAG, "Tunnel failed (attempt $attempt/$maxAttempts)", e)
+                    if (attempt >= maxAttempts || !running.get()) {
+                        disconnect()
+                        break
+                    }
+                    // Close old TUN fd before retry
+                    tunFd?.close()
+                    tunFd = null
+                    vpnSession?.close()
+                    vpnSession = null
+                    val delay = delays[minOf(attempt - 1, delays.size - 1)]
+                    Log.i(TAG, "Reconnecting in ${delay}ms...")
+                    try { Thread.sleep(delay) } catch (_: InterruptedException) { break }
+                }
             }
         }.also { it.start() }
 
         return START_STICKY
     }
 
-    private fun runTunnel(host: String, port: Int, token: String) {
+    private fun runTunnel(host: String, port: Int, token: String, killSwitch: Boolean) {
         running.set(true)
         Log.i(TAG, "Connecting to $host:$port")
 
@@ -126,6 +144,7 @@ class ProtocolVpnService : VpnService() {
             .setSession("Protocol VPN")
             .setMtu(session.mtu)
             .addAddress(session.assignedIp, 24)
+            .setBlocking(killSwitch)
 
         for (dns in session.dnsServers) {
             if (dns.isNotBlank()) builder.addDnsServer(dns)

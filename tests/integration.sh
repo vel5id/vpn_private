@@ -130,6 +130,9 @@ else
     fail "Expected ≥3 servers, got $SERVER_COUNT"
 fi
 
+# Verify hostname is present in server list response
+assert_json_exists '.[0].hostname' "$SERVERS_JSON" "Server list includes hostname"
+
 SERVER_ID=$(echo "$SERVERS_JSON" | jq -r '.[0].id')
 
 # ─── 5. Connect (no subscription) ───────────────────────────

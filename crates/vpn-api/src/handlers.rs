@@ -37,6 +37,7 @@ pub struct AuthResponse {
 pub struct ServerInfo {
     pub id: Uuid,
     pub name: String,
+    pub hostname: String,
     pub region: String,
     pub load: f64,
 }
@@ -353,6 +354,7 @@ pub async fn list_servers(
         server_infos.push(ServerInfo {
             id: server.id,
             name: server.name,
+            hostname: server.hostname,
             region: server.region,
             load,
         });

@@ -5,6 +5,7 @@
 
 use std::net::Ipv4Addr;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::process::Command;
 
 use dashmap::DashSet;
 use parking_lot::Mutex;
@@ -34,6 +35,8 @@ pub enum TunError {
     PoolExhausted,
     #[error("IP address {0} is not in the pool")]
     NotInPool(Ipv4Addr),
+    #[error("failed to configure interface: {0}")]
+    Configure(String),
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -107,6 +110,68 @@ impl TunDevice {
     /// Get the interface name.
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// Configure the TUN interface with an IP address, bring it up,
+    /// and enable IP forwarding + NAT masquerading.
+    pub fn configure(&self, gateway: Ipv4Addr, prefix_len: u8) -> Result<(), TunError> {
+        let addr_cidr = format!("{}/{}", gateway, prefix_len);
+        let iface = &self.name;
+
+        // ip addr add <gateway>/<prefix> dev <iface>
+        let output = Command::new("ip")
+            .args(["addr", "add", &addr_cidr, "dev", iface])
+            .output()
+            .map_err(|e| TunError::Configure(format!("ip addr add: {e}")))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(TunError::Configure(format!("ip addr add failed: {stderr}")));
+        }
+
+        // ip link set <iface> up
+        let output = Command::new("ip")
+            .args(["link", "set", iface, "up"])
+            .output()
+            .map_err(|e| TunError::Configure(format!("ip link set up: {e}")))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(TunError::Configure(format!("ip link set up failed: {stderr}")));
+        }
+
+        // Enable IP forwarding
+        let output = Command::new("sysctl")
+            .args(["-w", "net.ipv4.ip_forward=1"])
+            .output()
+            .map_err(|e| TunError::Configure(format!("sysctl ip_forward: {e}")))?;
+        if !output.status.success() {
+            warn!("sysctl ip_forward failed (may already be enabled)");
+        }
+
+        // NAT masquerade for tunnel traffic
+        let subnet = format!("{}/{}", gateway, prefix_len);
+        let output = Command::new("iptables")
+            .args(["-t", "nat", "-C", "POSTROUTING", "-s", &subnet, "-j", "MASQUERADE"])
+            .output()
+            .map_err(|e| TunError::Configure(format!("iptables check: {e}")))?;
+        if !output.status.success() {
+            // Rule doesn't exist yet — add it
+            let output = Command::new("iptables")
+                .args(["-t", "nat", "-A", "POSTROUTING", "-s", &subnet, "-j", "MASQUERADE"])
+                .output()
+                .map_err(|e| TunError::Configure(format!("iptables add: {e}")))?;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(TunError::Configure(format!("iptables masquerade failed: {stderr}")));
+            }
+        }
+
+        info!(
+            interface = %iface,
+            address = %addr_cidr,
+            "TUN interface configured with NAT"
+        );
+
+        Ok(())
     }
 
     /// Read a packet from the TUN device.

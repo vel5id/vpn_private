@@ -17,6 +17,9 @@ class APIClient {
         return e
     }()
 
+    /// Whether a token refresh is currently in progress (prevents concurrent refreshes).
+    private var isRefreshing = false
+
     /// Current access token (stored in Keychain in production).
     var accessToken: String?
 
@@ -71,6 +74,40 @@ class APIClient {
         return try await get("/account")
     }
 
+    // MARK: - Token Refresh
+
+    /// Attempt to refresh the access token using the stored refresh token.
+    /// Returns `true` if refresh succeeded, `false` otherwise.
+    private func refreshAccessToken() async -> Bool {
+        guard !isRefreshing else { return false }
+        isRefreshing = true
+        defer { isRefreshing = false }
+
+        guard let refreshToken = KeychainHelper.load(key: "refreshToken") else {
+            return false
+        }
+
+        do {
+            let body: [String: String] = ["refresh_token": refreshToken]
+            var request = URLRequest(url: baseURL.appendingPathComponent("/auth/refresh"))
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try encoder.encode(body)
+
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+                return false
+            }
+
+            let authResponse = try decoder.decode(AuthResponse.self, from: data)
+            accessToken = authResponse.accessToken
+            KeychainHelper.save(key: "accessToken", value: authResponse.accessToken)
+            return true
+        } catch {
+            return false
+        }
+    }
+
     // MARK: - Networking
 
     private func get<T: Decodable>(_ path: String) async throws -> T {
@@ -79,6 +116,20 @@ class APIClient {
         addAuth(&request)
 
         let (data, response) = try await session.data(for: request)
+
+        // Retry once on 401 with token refresh
+        if let http = response as? HTTPURLResponse, http.statusCode == 401 {
+            if await refreshAccessToken() {
+                var retryRequest = URLRequest(url: baseURL.appendingPathComponent(path))
+                retryRequest.httpMethod = "GET"
+                addAuth(&retryRequest)
+                let (retryData, retryResponse) = try await session.data(for: retryRequest)
+                try validateResponse(retryResponse)
+                return try decoder.decode(T.self, from: retryData)
+            }
+            throw APIError.unauthorized
+        }
+
         try validateResponse(response)
         return try decoder.decode(T.self, from: data)
     }
@@ -94,6 +145,22 @@ class APIClient {
         addAuth(&request)
 
         let (data, response) = try await session.data(for: request)
+
+        // Retry once on 401 with token refresh
+        if let http = response as? HTTPURLResponse, http.statusCode == 401 {
+            if await refreshAccessToken() {
+                var retryRequest = URLRequest(url: baseURL.appendingPathComponent(path))
+                retryRequest.httpMethod = "POST"
+                retryRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                retryRequest.httpBody = try encoder.encode(body)
+                addAuth(&retryRequest)
+                let (retryData, retryResponse) = try await session.data(for: retryRequest)
+                try validateResponse(retryResponse)
+                return try decoder.decode(T.self, from: retryData)
+            }
+            throw APIError.unauthorized
+        }
+
         try validateResponse(response)
         return try decoder.decode(T.self, from: data)
     }

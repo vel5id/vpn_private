@@ -27,8 +27,19 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
     /// Keepalive timer — sends ping every 25 seconds.
     private var pingTimer: DispatchSourceTimer?
 
+    /// Saved tunnel parameters for reconnection
+    private var savedServerHost: String?
+    private var savedServerPort: Int?
+    private var savedSessionToken: String?
+    private var savedKillSwitch: Bool = true
+
     /// Whether the tunnel is actively forwarding packets.
     private var isForwarding = false
+
+    /// Reconnection state
+    private var reconnectAttempt = 0
+    private static let maxReconnectAttempts = 5
+    private static let reconnectDelays: [TimeInterval] = [1, 2, 4, 8, 15]
 
     // MARK: - Tunnel Lifecycle
 
@@ -36,8 +47,14 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         options: [String: NSObject]?,
         completionHandler: @escaping (Error?) -> Void
     ) {
-        guard let config = options,
-              let serverHost = config["serverHost"] as? String,
+        // providerConfiguration from NETunnelProviderProtocol
+        let providerConfig = (protocolConfiguration as? NETunnelProviderProtocol)?
+            .providerConfiguration ?? [:]
+
+        // options can override providerConfiguration (e.g. on-demand connect)
+        let config = providerConfig.merging(options ?? [:]) { _, new in new }
+
+        guard let serverHost = config["serverHost"] as? String,
               let serverPort = config["serverPort"] as? NSNumber,
               let sessionToken = config["sessionToken"] as? String
         else {
@@ -46,6 +63,15 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
                 userInfo: [NSLocalizedDescriptionKey: "Missing configuration"]))
             return
         }
+
+        let killSwitchEnabled = (config["killSwitch"] as? NSNumber)?.boolValue ?? true
+
+        // Save parameters for reconnection
+        savedServerHost = serverHost
+        savedServerPort = serverPort.intValue
+        savedSessionToken = sessionToken
+        savedKillSwitch = killSwitchEnabled
+        reconnectAttempt = 0
 
         os_log(.info, log: log, "Starting tunnel to %{public}@:%d",
                serverHost, serverPort.intValue)
@@ -84,7 +110,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
                     self.vpnSession = session
 
                     // 4. Configure TUN interface
-                    self.setupTunnelInterface(session: session) { tunnelError in
+                    self.setupTunnelInterface(session: session, killSwitch: killSwitchEnabled) { tunnelError in
                         if let tunnelError = tunnelError {
                             completionHandler(tunnelError)
                             return
@@ -211,6 +237,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
 
     private func setupTunnelInterface(
         session: VpnSession,
+        killSwitch: Bool,
         completion: @escaping (Error?) -> Void
     ) {
         let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: session.assignedIp())
@@ -234,6 +261,14 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
 
         // MTU
         settings.mtu = NSNumber(value: session.mtu())
+
+        // Kill Switch — block all traffic when VPN disconnects
+        if killSwitch {
+            if #available(iOS 14.2, *) {
+                settings.includeAllNetworks = true
+                settings.excludeLocalNetworks = true
+            }
+        }
 
         setTunnelNetworkSettings(settings) { error in
             completion(error)
@@ -276,11 +311,13 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
             if let error = error {
                 os_log(.error, log: self.log, "Read error: %{public}@",
                        error.localizedDescription)
+                self.attemptReconnect()
                 return
             }
 
             guard let data = data, !data.isEmpty else {
                 os_log(.info, log: self.log, "Server closed connection")
+                self.attemptReconnect()
                 return
             }
 
@@ -326,6 +363,85 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         }
         timer.resume()
         self.pingTimer = timer
+    }
+
+    // MARK: - Auto-Reconnect
+
+    private func attemptReconnect() {
+        guard reconnectAttempt < Self.maxReconnectAttempts,
+              let host = savedServerHost,
+              let port = savedServerPort,
+              let token = savedSessionToken
+        else {
+            os_log(.error, log: log, "Reconnect failed after %d attempts — giving up",
+                   reconnectAttempt)
+            cancelTunnelWithError(NSError(domain: "VPN", code: 20,
+                userInfo: [NSLocalizedDescriptionKey: "Connection lost"]))
+            return
+        }
+
+        let delay = Self.reconnectDelays[min(reconnectAttempt, Self.reconnectDelays.count - 1)]
+        reconnectAttempt += 1
+
+        os_log(.info, log: log, "Reconnecting (attempt %d/%d) in %.0fs...",
+               reconnectAttempt, Self.maxReconnectAttempts, delay)
+
+        // Signal the OS that we're reconnecting (keeps kill switch active)
+        reasserting = true
+
+        // Tear down old state
+        isForwarding = false
+        pingTimer?.cancel()
+        pingTimer = nil
+        connection?.cancel()
+        connection = nil
+        vpnSession = nil
+
+        DispatchQueue.global().asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self = self else { return }
+
+            let endpoint = NWHostEndpoint(hostname: host, port: String(port))
+            let tlsConnection = self.createTCPConnection(to: endpoint, enableTLS: true,
+                                                          tlsParameters: nil, delegate: nil)
+            self.connection = tlsConnection
+
+            self.waitForConnection(tlsConnection) { error in
+                if let error = error {
+                    os_log(.error, log: self.log, "Reconnect TLS failed: %{public}@",
+                           error.localizedDescription)
+                    self.attemptReconnect()
+                    return
+                }
+
+                self.performHandshake(sessionToken: token, connection: tlsConnection) { result in
+                    switch result {
+                    case .failure(let error):
+                        os_log(.error, log: self.log, "Reconnect handshake failed: %{public}@",
+                               error.localizedDescription)
+                        self.attemptReconnect()
+
+                    case .success(let session):
+                        self.vpnSession = session
+                        self.setupTunnelInterface(session: session, killSwitch: self.savedKillSwitch) { tunnelError in
+                            if let tunnelError = tunnelError {
+                                os_log(.error, log: self.log, "Reconnect TUN setup failed: %{public}@",
+                                       tunnelError.localizedDescription)
+                                self.attemptReconnect()
+                                return
+                            }
+
+                            self.reconnectAttempt = 0
+                            self.reasserting = false
+                            self.startForwarding(connection: tlsConnection, session: session)
+                            self.startKeepalive(connection: tlsConnection, session: session)
+
+                            os_log(.info, log: self.log, "Reconnected successfully — IP %{public}@",
+                                   session.assignedIp())
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // MARK: - Helpers

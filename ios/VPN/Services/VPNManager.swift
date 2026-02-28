@@ -46,6 +46,7 @@ class VPNManager: ObservableObject {
                 "serverHost": connectResponse.hostname as NSString,
                 "serverPort": NSNumber(value: connectResponse.port),
                 "sessionToken": connectResponse.sessionToken as NSString,
+                "killSwitch": NSNumber(value: UserDefaults.standard.bool(forKey: "killSwitch")),
             ]
 
             manager.protocolConfiguration = proto

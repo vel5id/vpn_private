@@ -60,6 +60,18 @@ async fn main() -> Result<()> {
     let tun_device = Arc::new(
         TunDevice::create("vpn%d").context("failed to create TUN device (run as root?)")?,
     );
+
+    // Configure the TUN interface: assign IP, bring up, enable NAT
+    let prefix_len: u8 = config
+        .tunnel_subnet
+        .split('/')
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(24);
+    tun_device
+        .configure(config.tunnel_gateway, prefix_len)
+        .context("failed to configure TUN interface")?;
+
     info!(interface = tun_device.name(), "TUN device ready");
 
     // Set up session manager

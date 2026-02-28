@@ -8,6 +8,8 @@ struct SettingsView: View {
     @AppStorage("autoConnect") private var autoConnectOnUntrusted = false
     @AppStorage("selectedProtocol") private var selectedProtocol = "Auto"
 
+    @State private var showPaywall = false
+
     var body: some View {
         NavigationStack {
             List {
@@ -35,7 +37,7 @@ struct SettingsView: View {
                             }
                         } else {
                             Button("Subscribe") {
-                                // TODO: show RevenueCat paywall
+                                showPaywall = true
                             }
                         }
                     }
@@ -79,6 +81,90 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("Settings")
+            .sheet(isPresented: $showPaywall) {
+                PaywallView()
+            }
+        }
+    }
+}
+
+// MARK: - Paywall View (RevenueCat integration point)
+
+/// Paywall presented when the user taps "Subscribe".
+///
+/// To integrate RevenueCat:
+/// 1. `import RevenueCatUI`
+/// 2. Replace the body with `PaywallView()` from RevenueCatUI
+///    or use `Purchases.shared.offerings` to build a custom paywall.
+struct PaywallView: View {
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 24) {
+                Spacer()
+
+                Image(systemName: "shield.checkered")
+                    .font(.system(size: 64))
+                    .foregroundStyle(.blue)
+
+                Text("Unlock Premium VPN")
+                    .font(.title.bold())
+
+                VStack(alignment: .leading, spacing: 12) {
+                    FeatureRow(icon: "bolt.fill", text: "Unlimited bandwidth")
+                    FeatureRow(icon: "globe", text: "All server locations")
+                    FeatureRow(icon: "lock.shield", text: "Kill switch & auto-reconnect")
+                    FeatureRow(icon: "person.2.fill", text: "Up to 5 devices")
+                }
+                .padding(.horizontal)
+
+                Spacer()
+
+                Button {
+                    // TODO: Purchases.shared.purchase(package:)
+                    // For now, dismiss after a simulated purchase
+                    dismiss()
+                } label: {
+                    Text("Start Free Trial — $4.99/month")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                        .background(.blue)
+                        .foregroundStyle(.white)
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                }
+                .padding(.horizontal)
+
+                Button("Restore Purchases") {
+                    // TODO: Purchases.shared.restorePurchases()
+                }
+                .font(.footnote)
+
+                Text("Cancel anytime. Terms apply.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .padding(.bottom)
+            }
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Close") { dismiss() }
+                }
+            }
+        }
+    }
+}
+
+private struct FeatureRow: View {
+    let icon: String
+    let text: String
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .foregroundStyle(.blue)
+                .frame(width: 24)
+            Text(text)
         }
     }
 }
