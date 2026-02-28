@@ -106,13 +106,13 @@ pub async fn request_id_middleware(
         .headers()
         .get("x-request-id")
         .and_then(|v| v.to_str().ok())
+        .filter(|s| s.len() <= 128 && s.chars().all(|c| c.is_ascii_graphic()))
         .map(String::from)
         .unwrap_or_else(|| Uuid::new_v4().to_string());
 
-    req.headers_mut().insert(
-        "x-request-id",
-        request_id.parse().expect("valid header value"),
-    );
+    if let Ok(header_value) = request_id.parse() {
+        req.headers_mut().insert("x-request-id", header_value);
+    }
 
     // Store in extensions for handlers to access
     req.extensions_mut().insert(RequestId(request_id.clone()));

@@ -16,3 +16,15 @@ Thumbs.db
 # Environment
 .env
 *.env.local
+secrets.env
+
+# Secrets & certificates
+*.pem
+*.key
+*.p12
+*.pfx
+.vault_pass
+
+# Terraform
+*.tfstate
+*.tfstate.backup

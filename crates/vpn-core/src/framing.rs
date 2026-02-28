@@ -176,12 +176,21 @@ impl FrameDecoder {
         // Consume length header
         self.buffer.advance(LENGTH_HEADER_SIZE);
 
-        // Read type byte
-        let frame_type = FrameType::try_from(self.buffer[0])?;
+        // Read type byte and payload length
+        let type_byte = self.buffer[0];
         self.buffer.advance(1);
+        let payload_len = body_len - 1;
+
+        let frame_type = match FrameType::try_from(type_byte) {
+            Ok(ft) => ft,
+            Err(e) => {
+                // Skip remaining payload to keep decoder synchronized
+                self.buffer.advance(payload_len);
+                return Err(e);
+            }
+        };
 
         // Read payload (body_len - 1 for the type byte)
-        let payload_len = body_len - 1;
         let payload = self.buffer[..payload_len].to_vec();
         self.buffer.advance(payload_len);
 

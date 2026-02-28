@@ -17,7 +17,7 @@ use axum::{
 use sqlx::postgres::PgPoolOptions;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 use crate::auth::JwtConfig;
@@ -175,9 +175,15 @@ async fn main() -> Result<()> {
         .route("/metrics", get(middleware::metrics_handler));
 
     tokio::spawn(async move {
-        let listener = tokio::net::TcpListener::bind(metrics_addr).await.unwrap();
-        info!(addr = %metrics_addr, "Metrics server listening (localhost only)");
-        axum::serve(listener, metrics_app).await.ok();
+        match tokio::net::TcpListener::bind(metrics_addr).await {
+            Ok(listener) => {
+                info!(addr = %metrics_addr, "Metrics server listening (localhost only)");
+                axum::serve(listener, metrics_app).await.ok();
+            }
+            Err(e) => {
+                error!(error = %e, addr = %metrics_addr, "Failed to bind metrics server");
+            }
+        }
     });
 
     // Background: rate limiter cleanup every 5 minutes

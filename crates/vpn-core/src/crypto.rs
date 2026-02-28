@@ -119,6 +119,9 @@ impl SharedSecret {
         client_iv.copy_from_slice(&output[64..76]);
         server_iv.copy_from_slice(&output[76..88]);
 
+        // Zeroize the raw HKDF output immediately
+        output.zeroize();
+
         Ok(SessionKeys {
             client_key,
             server_key,

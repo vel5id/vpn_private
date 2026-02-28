@@ -5,6 +5,7 @@ on:
     branches: [main, develop]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -96,6 +97,29 @@ jobs:
         with:
           name: vpn-api
           path: target/release/vpn-api
+
+  audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  integration:
+    name: Docker Integration Tests
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run integration tests
+        run: docker compose up --build --abort-on-container-exit
+
+      - name: Cleanup
+        if: always()
+        run: docker compose down -v
 
   # Manual trigger for iOS cross-compilation
   build-ios:

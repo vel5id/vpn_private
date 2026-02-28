@@ -104,7 +104,9 @@ impl VpnHandshakeState {
         let keypair = self
             .keypair
             .lock()
-            .unwrap()
+            .map_err(|_| VpnError::InvalidState {
+                reason: "internal lock poisoned".into(),
+            })?
             .take()
             .ok_or_else(|| VpnError::InvalidState {
                 reason: "Handshake already finalized".into(),
@@ -193,7 +195,9 @@ impl VpnSession {
     ///
     /// Returns bytes ready to write to the TLS connection.
     pub fn send_packet(&self, plaintext: Vec<u8>) -> Result<Vec<u8>, VpnError> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().map_err(|_| VpnError::InvalidState {
+            reason: "internal lock poisoned".into(),
+        })?;
 
         let nonce = inner
             .send_nonce
@@ -241,10 +245,14 @@ impl VpnSession {
     /// Feed raw bytes received from the TLS connection into the decoder.
     ///
     /// After feeding, call `receivePacket()` in a loop until it returns `nil`.
-    pub fn feed_data(&self, data: Vec<u8>) {
-        let mut inner = self.inner.lock().unwrap();
-        // Silently ignore buffer overflow — decoder is reset internally
-        let _ = inner.decoder.feed(&data);
+    pub fn feed_data(&self, data: Vec<u8>) -> Result<(), VpnError> {
+        let mut inner = self.inner.lock().map_err(|_| VpnError::InvalidState {
+            reason: "internal lock poisoned".into(),
+        })?;
+        inner.decoder.feed(&data).map_err(|e| VpnError::Framing {
+            reason: e.to_string(),
+        })?;
+        Ok(())
     }
 
     /// Decode and decrypt the next Data frame from the buffer.
@@ -253,7 +261,9 @@ impl VpnSession {
     /// - Returns `None` when more bytes are needed (call `feedData` first).
     /// - Ping/Pong/Handshake frames are silently consumed.
     pub fn receive_packet(&self) -> Result<Option<Vec<u8>>, VpnError> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().map_err(|_| VpnError::InvalidState {
+            reason: "internal lock poisoned".into(),
+        })?;
 
         loop {
             match inner.decoder.decode() {
@@ -290,7 +300,10 @@ impl VpnSession {
 
     /// Whether the internal buffer still contains un-decoded bytes.
     pub fn has_buffered_data(&self) -> bool {
-        let inner = self.inner.lock().unwrap();
+        let inner = match self.inner.lock() {
+            Ok(guard) => guard,
+            Err(_) => return false,
+        };
         inner.decoder.buffered() > 0
     }
 
@@ -371,13 +384,13 @@ mod tests {
         // Client → Server
         let msg = b"Hello from iOS!".to_vec();
         let wire = client.send_packet(msg.clone()).unwrap();
-        server.feed_data(wire);
+        server.feed_data(wire).unwrap();
         assert_eq!(server.receive_packet().unwrap().unwrap(), msg);
 
         // Server → Client
         let reply = b"Hello from server!".to_vec();
         let wire = server.send_packet(reply.clone()).unwrap();
-        client.feed_data(wire);
+        client.feed_data(wire).unwrap();
         assert_eq!(client.receive_packet().unwrap().unwrap(), reply);
     }
 
@@ -391,7 +404,7 @@ mod tests {
         for i in 0u32..200 {
             let data = format!("pkt-{i}").into_bytes();
             let wire = client.send_packet(data).unwrap();
-            server.feed_data(wire);
+            server.feed_data(wire).unwrap();
         }
 
         for i in 0u32..200 {
@@ -434,9 +447,9 @@ mod tests {
         let pong = client.create_pong_frame().unwrap();
 
         // Server receives all at once
-        server.feed_data(ping);
-        server.feed_data(data_wire);
-        server.feed_data(pong);
+        server.feed_data(ping).unwrap();
+        server.feed_data(data_wire).unwrap();
+        server.feed_data(pong).unwrap();
 
         // Only the data frame should come through
         let received = server.receive_packet().unwrap().unwrap();
