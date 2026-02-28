@@ -1,0 +1,76 @@
+upstream vpn_api {
+    server 127.0.0.1:{{ api_listen_port }};
+}
+
+server {
+    listen 80;
+    server_name {{ api_domain }};
+
+    # Redirect HTTP to HTTPS
+    location / {
+        return 301 https://$host$request_uri;
+    }
+
+    # ACME challenge for certbot
+    location /.well-known/acme-challenge/ {
+        root /var/www/html;
+    }
+}
+
+server {
+    listen 443 ssl http2;
+    server_name {{ api_domain }};
+
+    # TLS will be configured by certbot
+    # ssl_certificate /etc/letsencrypt/live/{{ api_domain }}/fullchain.pem;
+    # ssl_certificate_key /etc/letsencrypt/live/{{ api_domain }}/privkey.pem;
+
+    # Security headers
+    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
+    add_header X-Content-Type-Options nosniff always;
+    add_header X-Frame-Options DENY always;
+    add_header X-XSS-Protection "1; mode=block" always;
+
+    # Proxy to API backend
+    location / {
+        proxy_pass http://vpn_api;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Timeouts
+        proxy_connect_timeout 10s;
+        proxy_send_timeout 30s;
+        proxy_read_timeout 30s;
+    }
+
+    # Health check (no logging)
+    location /health {
+        proxy_pass http://vpn_api;
+        access_log off;
+    }
+
+    # Block sensitive paths
+    location /webhooks/ {
+        # Only allow RevenueCat webhook IPs (update as needed)
+        # allow 52.0.0.0/8;
+        # deny all;
+        proxy_pass http://vpn_api;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
+    # Rate limiting for auth endpoints
+    location /auth/ {
+        limit_req zone=auth burst=5 nodelay;
+        proxy_pass http://vpn_api;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}
+
+# Rate limiting zone (defined in nginx.conf http block)
+# limit_req_zone $binary_remote_addr zone=auth:10m rate=5r/m;

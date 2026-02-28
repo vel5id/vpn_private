@@ -1,0 +1,189 @@
+# API Backend Provisioning
+# Usage: ansible-playbook -i inventory.ini api-server.yml
+---
+- name: Provision API Backend
+  hosts: api
+  become: true
+
+  tasks:
+    # ── System Setup ──────────────────────────────────────
+    - name: Update apt cache
+      apt:
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Install system dependencies
+      apt:
+        name:
+          - postgresql
+          - postgresql-contrib
+          - nginx
+          - certbot
+          - python3-certbot-nginx
+          - prometheus
+          - prometheus-node-exporter
+        state: present
+
+    - name: Create application user
+      user:
+        name: "{{ app_user }}"
+        system: true
+        shell: /usr/sbin/nologin
+        create_home: false
+
+    - name: Create application directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
+        mode: "0755"
+      loop:
+        - "{{ app_dir }}"
+        - "{{ bin_dir }}"
+        - "{{ config_dir }}"
+        - "{{ data_dir }}"
+        - "{{ log_dir }}"
+
+    # ── PostgreSQL ────────────────────────────────────────
+    - name: Ensure PostgreSQL is started
+      systemd:
+        name: postgresql
+        state: started
+        enabled: true
+
+    - name: Create database user
+      become_user: postgres
+      community.postgresql.postgresql_user:
+        name: "{{ db_user }}"
+        password: "{{ lookup('env', 'DB_PASSWORD') | default('vpn_db_password', true) }}"
+        role_attr_flags: CREATEDB
+
+    - name: Create database
+      become_user: postgres
+      community.postgresql.postgresql_db:
+        name: "{{ db_name }}"
+        owner: "{{ db_user }}"
+
+    - name: Enable pgcrypto extension
+      become_user: postgres
+      community.postgresql.postgresql_ext:
+        name: pgcrypto
+        db: "{{ db_name }}"
+
+    # ── Binary Deployment ─────────────────────────────────
+    - name: Copy vpn-api binary
+      copy:
+        src: "../target/release/vpn-api"
+        dest: "{{ bin_dir }}/vpn-api"
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
+        mode: "0755"
+      notify: restart vpn-api
+
+    # ── Systemd Service ───────────────────────────────────
+    - name: Deploy vpn-api systemd unit
+      template:
+        src: templates/vpn-api.service.j2
+        dest: /etc/systemd/system/vpn-api.service
+        mode: "0644"
+      notify:
+        - reload systemd
+        - restart vpn-api
+
+    - name: Enable and start vpn-api
+      systemd:
+        name: vpn-api
+        enabled: true
+        state: started
+
+    # ── TLS via Certbot + Nginx ───────────────────────────
+    - name: Deploy nginx config
+      template:
+        src: templates/nginx-api.conf.j2
+        dest: /etc/nginx/sites-available/vpn-api
+        mode: "0644"
+      notify: reload nginx
+
+    - name: Enable nginx site
+      file:
+        src: /etc/nginx/sites-available/vpn-api
+        dest: /etc/nginx/sites-enabled/vpn-api
+        state: link
+      notify: reload nginx
+
+    - name: Remove default nginx site
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+      notify: reload nginx
+
+    - name: Obtain Let's Encrypt certificate via nginx
+      command: >
+        certbot --nginx
+        --non-interactive
+        --agree-tos
+        --email {{ certbot_email }}
+        -d {{ api_domain }}
+      args:
+        creates: /etc/letsencrypt/live/{{ api_domain }}/fullchain.pem
+
+    - name: Certbot auto-renewal cron
+      cron:
+        name: certbot-renew
+        minute: "0"
+        hour: "3"
+        job: "certbot renew --quiet"
+
+    # ── Database Backups ──────────────────────────────────
+    - name: Create backup directory
+      file:
+        path: "{{ data_dir }}/backups"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
+        mode: "0700"
+
+    - name: Database backup cron
+      cron:
+        name: db-backup
+        minute: "0"
+        hour: "2"
+        job: >
+          pg_dump -U {{ db_user }} {{ db_name }} |
+          gzip > {{ data_dir }}/backups/vpn_$(date +\%Y\%m\%d_\%H\%M\%S).sql.gz &&
+          find {{ data_dir }}/backups -name '*.sql.gz' -mtime +7 -delete
+
+    # ── Prometheus Config ─────────────────────────────────
+    - name: Deploy prometheus config
+      template:
+        src: templates/prometheus.yml.j2
+        dest: /etc/prometheus/prometheus.yml
+        mode: "0644"
+      notify: restart prometheus
+
+    - name: Enable and start prometheus
+      systemd:
+        name: prometheus
+        state: started
+        enabled: true
+
+  handlers:
+    - name: restart vpn-api
+      systemd:
+        name: vpn-api
+        state: restarted
+
+    - name: reload systemd
+      systemd:
+        daemon_reload: true
+
+    - name: reload nginx
+      systemd:
+        name: nginx
+        state: reloaded
+
+    - name: restart prometheus
+      systemd:
+        name: prometheus
+        state: restarted

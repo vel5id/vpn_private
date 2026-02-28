@@ -1,0 +1,40 @@
+[Unit]
+Description=VPN API Backend
+After=network-online.target postgresql.service
+Wants=network-online.target
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User={{ app_user }}
+Group={{ app_group }}
+ExecStart={{ bin_dir }}/vpn-api
+Restart=always
+RestartSec=5
+LimitNOFILE=65535
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths={{ log_dir }}
+PrivateTmp=true
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vpn-api
+
+# Environment
+Environment=RUST_LOG=info
+Environment=RUST_BACKTRACE=1
+Environment=APP_ENV=production
+Environment=LISTEN_ADDR=127.0.0.1:{{ api_listen_port }}
+Environment=DATABASE_URL=postgres://{{ db_user }}:{{ lookup('env', 'DB_PASSWORD') | default('vpn_db_password', true) }}@{{ db_host }}:{{ db_port }}/{{ db_name }}
+Environment=ALLOWED_ORIGINS={{ allowed_origins }}
+
+# Sensitive secrets loaded from a protected file
+EnvironmentFile=/etc/vpn-api/secrets.env
+
+[Install]
+WantedBy=multi-user.target

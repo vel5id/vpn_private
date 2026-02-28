@@ -1,0 +1,25 @@
+[package]
+name = "vpn-ffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "FFI bridge — exposes vpn-core to Swift via uniffi"
+
+[lib]
+crate-type = ["lib", "staticlib", "cdylib"]
+name = "vpn_ffi"
+
+[dependencies]
+vpn-core = { path = "../vpn-core" }
+uniffi = { version = "0.28", features = ["cli"] }
+bytes = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[build-dependencies]
+uniffi = { version = "0.28", features = ["build"] }
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "uniffi-bindgen.rs"

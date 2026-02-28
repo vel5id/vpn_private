@@ -1,0 +1,75 @@
+# Dockerfile.android
+# Cross-compiles libvpn_android.so for Android targets using NDK.
+#
+# Usage:
+#   docker build -f Dockerfile.android -t vpn-android-builder .
+#   docker run --rm -v $(pwd)/dist/android:/out vpn-android-builder
+#
+# Produces: /out/{arm64-v8a,armeabi-v7a,x86_64}/libvpn_android.so
+
+FROM rust:1.88-bookworm AS builder
+
+# Install Android NDK command-line tools
+ENV ANDROID_NDK_VERSION=r27c
+ENV ANDROID_NDK_HOME=/opt/android-ndk
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    unzip wget build-essential cmake clang && \
+    rm -rf /var/lib/apt/lists/*
+
+# Download & extract NDK
+RUN wget -q "https://dl.google.com/android/repository/android-ndk-${ANDROID_NDK_VERSION}-linux.zip" \
+    -O /tmp/ndk.zip && \
+    unzip -q /tmp/ndk.zip -d /opt && \
+    mv /opt/android-ndk-${ANDROID_NDK_VERSION} ${ANDROID_NDK_HOME} && \
+    rm /tmp/ndk.zip
+
+# Set up toolchain paths
+ENV PATH="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin:${PATH}"
+
+# Rust Android targets
+RUN rustup target add \
+    aarch64-linux-android \
+    armv7-linux-androideabi \
+    x86_64-linux-android
+
+# Configure cargo linkers via env vars (more reliable than config.toml)
+ENV CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=aarch64-linux-android24-clang
+ENV CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER=armv7a-linux-androideabi24-clang
+ENV CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER=x86_64-linux-android24-clang
+
+# Set CC/AR environment for ring/aws-lc-sys (crypto deps)
+ENV CC_aarch64_linux_android=aarch64-linux-android24-clang
+ENV AR_aarch64_linux_android=llvm-ar
+ENV CC_armv7_linux_androideabi=armv7a-linux-androideabi24-clang
+ENV AR_armv7_linux_androideabi=llvm-ar
+ENV CC_x86_64_linux_android=x86_64-linux-android24-clang
+ENV AR_x86_64_linux_android=llvm-ar
+
+WORKDIR /src
+
+# Cache dependencies — copy only manifests first
+COPY Cargo.toml Cargo.toml
+COPY crates/vpn-core/Cargo.toml crates/vpn-core/Cargo.toml
+COPY crates/vpn-server/Cargo.toml crates/vpn-server/Cargo.toml
+COPY crates/vpn-api/Cargo.toml crates/vpn-api/Cargo.toml
+COPY crates/vpn-ffi/Cargo.toml crates/vpn-ffi/Cargo.toml
+COPY crates/vpn-android/Cargo.toml crates/vpn-android/Cargo.toml
+
+# Create stub lib.rs files so cargo can resolve the dependency graph
+RUN mkdir -p crates/vpn-core/src && echo "" > crates/vpn-core/src/lib.rs && \
+    mkdir -p crates/vpn-server/src && echo "fn main(){}" > crates/vpn-server/src/main.rs && \
+    mkdir -p crates/vpn-api/src && echo "fn main(){}" > crates/vpn-api/src/main.rs && \
+    mkdir -p crates/vpn-ffi/src && echo "" > crates/vpn-ffi/src/lib.rs && \
+    mkdir -p crates/vpn-android/src && echo "" > crates/vpn-android/src/lib.rs
+
+# Pre-fetch dependencies (all targets)
+RUN cargo fetch
+
+# Copy build script and actual source
+COPY scripts/build-android.sh /build.sh
+RUN chmod +x /build.sh
+COPY crates/vpn-core crates/vpn-core
+COPY crates/vpn-android crates/vpn-android
+
+CMD ["/build.sh"]

@@ -1,0 +1,72 @@
+# ─────────────────────────────────────────────────────────────
+# VPN MVP — Full-Stack Integration Simulation
+#
+# Services:
+#   postgres     — PostgreSQL 16 database
+#   vpn-api      — Axum REST API (auth, subscriptions, sessions)
+#   integration  — Bash test runner: register → login → servers → connect → FFI roundtrip
+#
+# Usage:
+#   docker compose up --build --abort-on-container-exit
+# ─────────────────────────────────────────────────────────────
+
+services:
+  # ── PostgreSQL ──────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: vpn
+      # WARNING: This password is for local development/testing only.
+      # In production, use Docker secrets or a secrets manager.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vpn}
+      POSTGRES_DB: vpn
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vpn -d vpn"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+
+  # ── VPN API Server ─────────────────────────────────────────
+  vpn-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: vpn-api
+    environment:
+      DATABASE_URL: "postgres://vpn:${POSTGRES_PASSWORD:-vpn}@postgres:5432/vpn"
+      JWT_SECRET: "integration-test-jwt-secret-32chars!!"
+      VPN_SESSION_SECRET: "integration-test-vpn-session-secret"
+      LISTEN_ADDR: "0.0.0.0:8080"
+      RUST_LOG: "info"
+    ports:
+      - "18080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+
+  # ── Integration Test Runner ────────────────────────────────
+  integration:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    environment:
+      API_URL: "http://vpn-api:8080"
+      DATABASE_URL: "postgres://vpn:${POSTGRES_PASSWORD:-vpn}@postgres:5432/vpn"
+    depends_on:
+      vpn-api:
+        condition: service_healthy
+    volumes:
+      - ./tests:/tests:ro
+    entrypoint: ["bash", "/tests/integration.sh"]
+
+volumes:
+  pgdata:

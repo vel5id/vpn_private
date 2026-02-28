@@ -1,0 +1,177 @@
+# VPN Node Server Provisioning
+# Usage: ansible-playbook -i inventory.ini vpn-node.yml
+---
+- name: Provision VPN Node
+  hosts: vpn_nodes
+  become: true
+
+  tasks:
+    # ── System Setup ──────────────────────────────────────
+    - name: Update apt cache
+      apt:
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Install system dependencies
+      apt:
+        name:
+          - curl
+          - certbot
+          - iptables-persistent
+          - net-tools
+          - prometheus-node-exporter
+        state: present
+
+    - name: Create application user
+      user:
+        name: "{{ app_user }}"
+        system: true
+        shell: /usr/sbin/nologin
+        create_home: false
+
+    - name: Create application directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
+        mode: "0755"
+      loop:
+        - "{{ app_dir }}"
+        - "{{ bin_dir }}"
+        - "{{ config_dir }}"
+        - "{{ log_dir }}"
+
+    # ── TLS Certificate ───────────────────────────────────
+    - name: Obtain Let's Encrypt certificate
+      command: >
+        certbot certonly --standalone
+        --non-interactive
+        --agree-tos
+        --email {{ certbot_email }}
+        -d {{ inventory_hostname }}.{{ base_domain }}
+      args:
+        creates: /etc/letsencrypt/live/{{ inventory_hostname }}.{{ base_domain }}/fullchain.pem
+
+    - name: Set certificate permissions for vpn user
+      file:
+        path: /etc/letsencrypt/live/{{ inventory_hostname }}.{{ base_domain }}
+        state: directory
+        mode: "0755"
+
+    - name: Certbot auto-renewal cron
+      cron:
+        name: certbot-renew
+        minute: "0"
+        hour: "3"
+        job: "certbot renew --quiet && systemctl reload vpn-server"
+
+    # ── Binary Deployment ─────────────────────────────────
+    - name: Copy vpn-server binary
+      copy:
+        src: "../target/release/vpn-server"
+        dest: "{{ bin_dir }}/vpn-server"
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
+        mode: "0755"
+      notify: restart vpn-server
+
+    # ── Configuration ─────────────────────────────────────
+    - name: Deploy vpn-server config
+      template:
+        src: templates/vpn-server-config.toml.j2
+        dest: "{{ config_dir }}/config.toml"
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
+        mode: "0600"
+      notify: restart vpn-server
+
+    # ── Networking ────────────────────────────────────────
+    - name: Enable IP forwarding
+      sysctl:
+        name: net.ipv4.ip_forward
+        value: "1"
+        sysctl_set: true
+        reload: true
+
+    - name: Configure iptables NAT masquerade
+      iptables:
+        table: nat
+        chain: POSTROUTING
+        source: "{{ vpn_tunnel_subnet }}"
+        out_interface: "{{ ansible_default_ipv4.interface }}"
+        jump: MASQUERADE
+      notify: save iptables
+
+    - name: Allow forwarding from TUN
+      iptables:
+        chain: FORWARD
+        in_interface: "vpn0"
+        jump: ACCEPT
+      notify: save iptables
+
+    - name: Allow forwarding to TUN
+      iptables:
+        chain: FORWARD
+        out_interface: "vpn0"
+        match: state
+        ctstate: RELATED,ESTABLISHED
+        jump: ACCEPT
+      notify: save iptables
+
+    # ── Firewall ──────────────────────────────────────────
+    - name: Allow HTTPS (port 443)
+      iptables:
+        chain: INPUT
+        protocol: tcp
+        destination_port: "443"
+        jump: ACCEPT
+
+    - name: Allow SSH (port 22)
+      iptables:
+        chain: INPUT
+        protocol: tcp
+        destination_port: "22"
+        jump: ACCEPT
+
+    - name: Allow loopback
+      iptables:
+        chain: INPUT
+        in_interface: lo
+        jump: ACCEPT
+
+    - name: Allow established connections
+      iptables:
+        chain: INPUT
+        match: state
+        ctstate: RELATED,ESTABLISHED
+        jump: ACCEPT
+
+    # ── Systemd Service ───────────────────────────────────
+    - name: Deploy vpn-server systemd unit
+      template:
+        src: templates/vpn-server.service.j2
+        dest: /etc/systemd/system/vpn-server.service
+        mode: "0644"
+      notify:
+        - reload systemd
+        - restart vpn-server
+
+    - name: Enable and start vpn-server
+      systemd:
+        name: vpn-server
+        enabled: true
+        state: started
+
+  handlers:
+    - name: restart vpn-server
+      systemd:
+        name: vpn-server
+        state: restarted
+
+    - name: reload systemd
+      systemd:
+        daemon_reload: true
+
+    - name: save iptables
+      command: netfilter-persistent save

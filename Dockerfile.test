@@ -1,0 +1,25 @@
+# Integration test runner — lightweight image with curl + jq + Rust test binary
+FROM rust:1.88-bookworm AS builder
+
+RUN apt-get update && apt-get install -y \
+    pkg-config libssl-dev cmake clang \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+COPY Cargo.toml Cargo.lock* ./
+COPY crates/ crates/
+
+# Build only the workspace tests (needed for vpn-core / vpn-ffi unit tests)
+RUN cargo test --workspace --no-run 2>&1 || true
+
+# ── Runtime ──────────────────────────────────────────────────
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y \
+    ca-certificates curl jq postgresql-client \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY tests/ /tests/
+RUN chmod +x /tests/integration.sh
+
+CMD ["/tests/integration.sh"]

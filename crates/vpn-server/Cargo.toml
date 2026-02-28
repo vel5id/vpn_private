@@ -1,0 +1,33 @@
+[package]
+name = "vpn-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "VPN node server — TLS listener, TUN device, packet routing"
+
+[dependencies]
+vpn-core = { path = "../vpn-core" }
+tokio = { workspace = true }
+tokio-rustls = "0.26"
+rustls = { version = "0.23", features = ["ring"] }
+rustls-pemfile = "2"
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+toml = "0.8"
+prometheus = "0.13"
+hyper = { version = "1", features = ["server", "http1"] }
+ring = { workspace = true }
+dashmap = "6"
+parking_lot = "0.12"
+libc = "0.2"
+nix = { version = "0.29", features = ["ioctl", "net", "fs"] }
+bytes = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }

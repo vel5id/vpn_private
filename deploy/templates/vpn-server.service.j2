@@ -1,0 +1,38 @@
+[Unit]
+Description=VPN Server Node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=vpn
+Group=vpn
+ExecStart={{ bin_dir }}/vpn-server --config {{ config_dir }}/config.toml
+Restart=always
+RestartSec=5
+LimitNOFILE=65535
+
+# Secrets — loaded from a root-owned file (mode 0600)
+EnvironmentFile={{ config_dir }}/secrets.env
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths={{ log_dir }} /dev/net/tun
+PrivateTmp=true
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vpn-server
+
+# Environment
+Environment=RUST_LOG=info
+Environment=RUST_BACKTRACE=1
+
+# Capabilities for TUN device
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target

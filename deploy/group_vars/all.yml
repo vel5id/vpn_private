@@ -1,0 +1,53 @@
+# Global variables for all playbooks
+---
+# Domain settings
+base_domain: "vpn.example.com"
+api_domain: "api.{{ base_domain }}"
+
+# Application user
+app_user: vpn
+app_group: vpn
+
+# Paths
+app_dir: /opt/vpn
+bin_dir: "{{ app_dir }}/bin"
+config_dir: "{{ app_dir }}/config"
+data_dir: "{{ app_dir }}/data"
+log_dir: /var/log/vpn
+
+# VPN Server settings
+vpn_listen_port: 443
+vpn_metrics_port: 9090
+vpn_tunnel_subnet: "10.8.0.0/24"
+vpn_tunnel_gateway: "10.8.0.1"
+vpn_tunnel_ip_start: "10.8.0.2"
+vpn_tunnel_ip_end: "10.8.0.254"
+vpn_dns_servers:
+  - "1.1.1.1"
+  - "8.8.8.8"
+vpn_mtu: 1400
+vpn_idle_timeout: 300
+
+# API Server settings
+api_listen_port: 8080
+api_public_port: 443
+
+# Database
+db_name: vpn
+db_user: vpn
+db_host: localhost
+db_port: 5432
+
+# Secrets (override in vault or env)
+# IMPORTANT: These MUST be overridden via ansible-vault or environment variables.
+# Deployment will fail if default values are used.
+jwt_secret: "{{ lookup('env', 'JWT_SECRET') | default('CHANGE_ME_IN_PRODUCTION', true) }}"
+vpn_session_secret: "{{ lookup('env', 'VPN_SESSION_SECRET') | default('CHANGE_ME_IN_PRODUCTION', true) }}"
+
+# Certbot
+certbot_email: "admin@{{ base_domain }}"
+
+# Monitoring
+prometheus_port: 9091
+grafana_port: 3000
+node_exporter_version: "1.7.0"

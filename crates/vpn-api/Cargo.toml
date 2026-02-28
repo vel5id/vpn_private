@@ -1,0 +1,30 @@
+[package]
+name = "vpn-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "VPN API backend — auth, subscriptions, server management"
+
+[dependencies]
+tokio = { workspace = true }
+axum = "0.8"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono"] }
+jsonwebtoken = "9"
+argon2 = "0.5"
+password-hash = "0.5"
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+ring = { workspace = true }
+dashmap = "6"
+prometheus = "0.13"
+lazy_static = "1"
+hex = "0.4"
